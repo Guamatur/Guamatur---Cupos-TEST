@@ -1214,7 +1214,7 @@ const sb=supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_ANON_KEY,{
 // ⚠️ Una sola versión por cadena y CORTA: el detalle va al CHANGELOG.md, no acá. Nacho ve este texto
 // completo en el encabezado (el resto ve solo el "bNN") y si es largo se desborda; además `APP_VERSION_CORTA`
 // saca el número con un match, así que dos "bNN" en la misma cadena confunden cuál es la versión.
-const APP_VERSION='Fase 2 · 2026-11-13 (b135-TEST · Margen por temporada (solo admin) · sobre b134 (columna Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales), b130 (PNR para TP), b129, b128, b127, b126 y b125. Paquetes con IA prendido, solo TEST.)';
+const APP_VERSION='Fase 2 · 2026-11-17 (b136-TEST · Plazo de reserva fijo: nunca baja · sobre b135 (margen por temporada), b134 (columna Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
 // Columnas de 'vuelos' legibles por cualquier usuario. EXCLUYE precio_neto: el admin lo lee por RPC admin_get_precio_neto (gateada por es_admin). No usar select('*') sobre vuelos: la columna precio_neto quedó revocada a authenticated.
 // ⚠️ Toda columna que se agregue acá necesita `grant select (col) to authenticated` en la base, si no
 // PostgREST tira 400 y se cae la pantalla entera (gotcha #6). `emitido` viene de la migración 2026-08-06.
@@ -1851,11 +1851,14 @@ function formatFechaHora(s){
 // b87: los lugares de una acción comercial (preventa) vencen en 48 h. **El plazo más corto manda:**
 // en un cupo crítico siguen siendo 24 h — aflojar a 48 justo en el cupo más escaso sería lo contrario
 // de para qué existe esa regla. `esAccion` = el lugar tiene accion_id.
-function plazoHoras(esC,esAccion){ return esC?24:(esAccion?48:72); }
-function vencimientoReserva(s,esC,extra,esAccion){
+// b136: el plazo se FIJA al reservar (pasajeros.plazo_horas) y nunca baja (Nacho, 17-nov: una reserva hecha no
+// puede perder tiempo porque otro llenó el cupo). Si la fila trae `fijo`, manda ese; la cuenta por cupo queda solo
+// para una reserva sin plazo guardado (no debería haber) y para anticipar el de una reserva que todavía no se hizo.
+function plazoHoras(esC,esAccion,fijo){ const f=Number(fijo); if(fijo!=null&&f>0) return f; return esC?24:(esAccion?48:72); }
+function vencimientoReserva(s,esC,extra,esAccion,fijo){
   if(!s)return{texto:'—',vencido:false};
   const d=new Date(s);if(isNaN(d))return{texto:'—',vencido:false};
-  const venc=new Date(d.getTime()+(plazoHoras(esC,esAccion)+(Number(extra)||0))*60*60*1000);
+  const venc=new Date(d.getTime()+(plazoHoras(esC,esAccion,fijo)+(Number(extra)||0))*60*60*1000);
   const u=new Date(venc.getTime()+(venc.getTimezoneOffset()+(-3*60))*60000);
   return{texto:u.toLocaleDateString('es-UY',{day:'2-digit',month:'2-digit'})+' '+String(u.getHours()).padStart(2,'0')+':'+String(u.getMinutes()).padStart(2,'0'),vencido:ahoraUY()>venc};
 }
@@ -2163,7 +2166,7 @@ async function cargarReservasTodas(){
   const filas=[];
   for(let desde=0;;desde+=1000){
     const {data,error}=await sb.from('pasajeros')
-      .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vendedor,vuelo_id,vencimiento_horas_extra,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha,temporada_id)')
+      .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vendedor,vuelo_id,vencimiento_horas_extra,plazo_horas,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha,temporada_id)')
       .neq('status','L').eq('cancelado',false).order('id').range(desde,desde+999);
     if(error){console.error('[Reservas]',error);cont.innerHTML='<div class="loading" style="color:var(--red)">Error al cargar</div>';return;}
     filas.push(...(data||[]));
@@ -2208,7 +2211,7 @@ function renderReservasTodas(){
   });
   const reservas=filas.filter(f=>f.status==='R');
   const vendidos=filas.filter(f=>f.status==='V'&&!f.lug.es_espera);
-  const vencDe=f=>{if(f.status!=='R'||f.lug.es_espera||!f.fecha_reserva)return null;const esC=!!_resCrit[f.vuelo_id];const esAcc=!!f.lug.accion_id;const ex=Number(f.vencimiento_horas_extra)||0;return {ms:new Date(f.fecha_reserva).getTime()+(plazoHoras(esC,esAcc)+ex)*3600000,info:vencimientoReserva(f.fecha_reserva,esC,ex,esAcc)};};
+  const vencDe=f=>{if(f.status!=='R'||f.lug.es_espera||!f.fecha_reserva)return null;const esC=!!_resCrit[f.vuelo_id];const esAcc=!!f.lug.accion_id;const ex=Number(f.vencimiento_horas_extra)||0;return {ms:new Date(f.fecha_reserva).getTime()+(plazoHoras(esC,esAcc,f.plazo_horas)+ex)*3600000,info:vencimientoReserva(f.fecha_reserva,esC,ex,esAcc,f.plazo_horas)};};
   let html=`<div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card"><div class="kpi-label">Reservas</div><div class="kpi-value c-orange">${reservas.length}</div></div>
     <div class="kpi-card"><div class="kpi-label">Lugares vendidos</div><div class="kpi-value c-green">${vendidos.length}</div></div>
@@ -2852,7 +2855,7 @@ async function cargarMisReservas(){
   cont.innerHTML='<div class="loading"><div class="spinner"></div>Cargando...</div>';
   const nombre=vendedores.find(v=>v.email===currentUser?.email)?.nombre||currentUser?.email||'';
   const {data,error}=await sb.from('pasajeros')
-    .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vuelo_id,vencimiento_horas_extra,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha)')
+    .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vuelo_id,vencimiento_horas_extra,plazo_horas,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha)')
     .in('vendedor',nombresQuePuedoOperar()).neq('status','L').eq('cancelado',false);
   if(error){console.error('[MisReservas]',error);cont.innerHTML='<div class="loading" style="color:var(--red)">Error al cargar</div>';return;}
   const norm=p=>{const l=Array.isArray(p.lugares)?p.lugares[0]:p.lugares;const v=Array.isArray(p.vuelos)?p.vuelos[0]:p.vuelos;return {...p,lug:l||{},vue:v||{}};};
@@ -2870,7 +2873,7 @@ async function cargarMisReservas(){
     (vv||[]).forEach(v=>{critMap[v.id]=(v.libres||0)<=3;});
   }
   // b87: el lugar de una acción comercial vence en 48 h — misma regla que el servidor (plazoHoras).
-  const vencDe=f=>{if(f.status!=='R'||f.lug.es_espera||!f.fecha_reserva)return null;const esC=!!critMap[f.vuelo_id];const esAcc=!!f.lug.accion_id;const ex=Number(f.vencimiento_horas_extra)||0;return {ms:new Date(f.fecha_reserva).getTime()+(plazoHoras(esC,esAcc)+ex)*3600000,info:vencimientoReserva(f.fecha_reserva,esC,ex,esAcc)};};
+  const vencDe=f=>{if(f.status!=='R'||f.lug.es_espera||!f.fecha_reserva)return null;const esC=!!critMap[f.vuelo_id];const esAcc=!!f.lug.accion_id;const ex=Number(f.vencimiento_horas_extra)||0;return {ms:new Date(f.fecha_reserva).getTime()+(plazoHoras(esC,esAcc,f.plazo_horas)+ex)*3600000,info:vencimientoReserva(f.fecha_reserva,esC,ex,esAcc,f.plazo_horas)};};
   let html=`<div class="kpi-grid" style="margin-bottom:20px">
     <div class="kpi-card"><div class="kpi-label">Mis reservas</div><div class="kpi-value c-orange">${reservas.length}</div></div>
     <div class="kpi-card"><div class="kpi-label">Mis lugares vendidos</div><div class="kpi-value c-green">${vendidos.length}</div></div>
@@ -4422,9 +4425,9 @@ async function cargarDetalle(vueloId){
     const libreSeat=!p||st==='L';
     const hExtra=Number(p?.vencimiento_horas_extra)||0;   // horas estiradas a mano por admin/Operaciones
     const esAccLug=!!l.accion_id;   // b87: los lugares de una accion (preventa) vencen en 48 h
-    const {texto:vText,vencido}=vencimientoReserva(p?.fecha_reserva,esVueloC,hExtra,esAccLug);
+    const {texto:vText,vencido}=vencimientoReserva(p?.fecha_reserva,esVueloC,hExtra,esAccLug,p?.plazo_horas);
   // F4: urgencia visual del vencimiento — rojo <12h, naranja <24h, anticipando (antes solo se pintaba cuando YA había vencido)
-  const vencMs=p?.fecha_reserva?new Date(p.fecha_reserva).getTime()+(plazoHoras(esVueloC,esAccLug)+hExtra)*3600000:null;
+  const vencMs=p?.fecha_reserva?new Date(p.fecha_reserva).getTime()+(plazoHoras(esVueloC,esAccLug,p?.plazo_horas)+hExtra)*3600000:null;
   const vencCls=(st!=='R'||l.es_espera||vencMs===null)?'vencimiento-ok':((vencido||(vencMs-Date.now())<12*3600000)?'vencimiento-warn':((vencMs-Date.now())<24*3600000?'vencimiento-soon':'vencimiento-ok'));
     const pJson=esc(JSON.stringify(p||{}));
     const inf=p?.id?infantMap[p.id]:null;
@@ -5141,10 +5144,12 @@ async function confirmarReserva(){
     const accs=Array.isArray(data.acciones)?data.acciones:[];
     const sinAcc=Number(data.sin_accion)||0;
     const ahoraISO=new Date().toISOString();
+    // b136: el servidor dice con qué plazo quedó la reserva (24 h si este lugar deja el cupo en sus últimos 3).
+    const esCRes=data.plazo_horas!=null?Number(data.plazo_horas)===24:reservarEsC;
     if(accs.length&&sinAcc>0){
-      msg+=` · Los de ${accs.map(a=>a.nombre).join(' / ')} vencen el ${vencimientoReserva(ahoraISO,reservarEsC,0,true).texto} hs; los demás, el ${vencimientoReserva(ahoraISO,reservarEsC,0,false).texto} hs.`;
+      msg+=` · Los de ${accs.map(a=>a.nombre).join(' / ')} vencen el ${vencimientoReserva(ahoraISO,esCRes,0,true).texto} hs; los demás, el ${vencimientoReserva(ahoraISO,esCRes,0,false).texto} hs.`;
     }else{
-      msg+=` · Vence el ${vencimientoReserva(ahoraISO,reservarEsC,0,accs.length>0).texto} hs.`;
+      msg+=` · Vence el ${vencimientoReserva(ahoraISO,esCRes,0,accs.length>0).texto} hs.`;
     }
     avisarMezclaAccion(accs,sinAcc,apellido,nombre,vendedorNombre);
   }
@@ -6182,7 +6187,7 @@ let _estVueloId=null,_estFilas=[],_estEsC=false;
 async function abrirEstirarVencimiento(vueloId){
   _estVueloId=vueloId;
   const [rLug,rVista]=await Promise.all([
-    sb.from('lugares').select('id,numero_lugar,es_espera,accion_id,pasajeros(id,status,cancelado,primer_apellido,primer_nombre,vendedor,ficha,fecha_reserva,vencimiento_horas_extra)').eq('vuelo_id',vueloId).order('numero_lugar'),
+    sb.from('lugares').select('id,numero_lugar,es_espera,accion_id,pasajeros(id,status,cancelado,primer_apellido,primer_nombre,vendedor,ficha,fecha_reserva,vencimiento_horas_extra,plazo_horas)').eq('vuelo_id',vueloId).order('numero_lugar'),
     sb.from('vista_vuelos').select('id,libres').eq('id',vueloId)
   ]);
   if(rLug.error){alert('No se pudieron traer las reservas: '+rLug.error.message);return;}
@@ -6202,8 +6207,8 @@ function pintarEstirar(){
   let html='<table><thead><tr><th></th><th>#</th><th>Pasajero</th><th>Vendedor</th><th>Ficha</th><th>Vence ahora</th><th>Quedaría</th></tr></thead><tbody>';
   _estFilas.forEach((f,i)=>{
     const ex=Number(f.p.vencimiento_horas_extra)||0;
-    const ahora=vencimientoReserva(f.p.fecha_reserva,_estEsC,ex,f.esAccion);
-    const luego=vencimientoReserva(f.p.fecha_reserva,_estEsC,ex+horas,f.esAccion);
+    const ahora=vencimientoReserva(f.p.fecha_reserva,_estEsC,ex,f.esAccion,f.p.plazo_horas);
+    const luego=vencimientoReserva(f.p.fecha_reserva,_estEsC,ex+horas,f.esAccion,f.p.plazo_horas);
     html+=`<tr><td><input type="checkbox" class="est-chk" data-i="${i}" checked/></td><td>${f.lugar}</td>
       <td>${esc([f.p.primer_apellido,f.p.primer_nombre].filter(Boolean).join(', '))||'—'}</td>
       <td>${esc(f.p.vendedor)||'—'}</td><td>${esc(f.p.ficha)||'—'}</td>
