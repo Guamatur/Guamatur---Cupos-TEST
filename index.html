@@ -548,7 +548,7 @@
     </div>
     <div class="form-group">
       <label class="form-label">Cantidad de lugares <span id="r-libres-label" style="color:var(--green)"></span></label>
-      <input class="form-input" id="r-cantidad" type="number" min="1" placeholder="Ej: 4"/>
+      <input class="form-input" id="r-cantidad" type="number" min="1" placeholder="Ej: 4" oninput="_pintarVencReserva()"/>
     </div>
     <div class="form-group">
       <label class="form-label">A nombre de <span style="color:var(--muted)">(referencia de la reserva)</span></label>
@@ -1214,7 +1214,7 @@ const sb=supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_ANON_KEY,{
 // ⚠️ Una sola versión por cadena y CORTA: el detalle va al CHANGELOG.md, no acá. Nacho ve este texto
 // completo en el encabezado (el resto ve solo el "bNN") y si es largo se desborda; además `APP_VERSION_CORTA`
 // saca el número con un match, así que dos "bNN" en la misma cadena confunden cuál es la versión.
-const APP_VERSION='Fase 2 · 2026-11-17 (b136-TEST · Plazo de reserva fijo: nunca baja · sobre b135 (margen por temporada), b134 (columna Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
+const APP_VERSION='Fase 2 · 2026-11-17 (b137-TEST · Cartel de la reserva con el plazo real · sobre b136 (plazo fijo), b135 (margen por temporada), b134 (columna Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
 // Columnas de 'vuelos' legibles por cualquier usuario. EXCLUYE precio_neto: el admin lo lee por RPC admin_get_precio_neto (gateada por es_admin). No usar select('*') sobre vuelos: la columna precio_neto quedó revocada a authenticated.
 // ⚠️ Toda columna que se agregue acá necesita `grant select (col) to authenticated` en la base, si no
 // PostgREST tira 400 y se cae la pantalla entera (gotcha #6). `emitido` viene de la migración 2026-08-06.
@@ -4214,6 +4214,9 @@ async function cargarDetalle(vueloId){
   // b87: cuántos de los lugares que se pueden reservar son de una acción comercial (vencen en 48 h).
   // Sirve para avisarlo en el modal ANTES de reservar; el detalle exacto lo devuelve la RPC DESPUÉS.
   const accLibres=reservables.filter(l=>l.accion_id).length;
+  // b137: en qué orden toma los lugares el servidor (por número) y cuáles son de acción, para que el cartel del
+  // modal diga el plazo REAL según la cantidad que se escribe.
+  _reservaAccOrden=reservables.slice().sort((a,b)=>a.numero_lugar-b.numero_lugar).map(l=>!!l.accion_id);
   const lVReservable=reservables.length;
   const bloqLibres=libresArr.filter(l=>l.bloqueado_operaciones).length;
   // b97 (pedido de Mikaela Minetti, 1-sep-2026): columna "Voucher enviado".
@@ -4244,7 +4247,7 @@ async function cargarDetalle(vueloId){
     </div>
     <div class="detalle-actions">
       <a href="#" class="link-volver" onclick="event.preventDefault();goTo('vuelos')">← Volver</a>
-      <button class="btn btn-success" onclick="abrirModalReservar('${vueloId}',${lVReservable},'${idsLibres.join(',')}',${bloqLibres},${esVueloC},${accLibres})">+ Reservar lugares</button>
+      <button class="btn btn-success" onclick="abrirModalReservar('${vueloId}',${lVReservable},'${idsLibres.join(',')}',${bloqLibres},${esVueloC},${accLibres},${lV})">+ Reservar lugares</button>
       ${(CONFIG.ATLAS_ENABLED&&misRParaCarga>0)?`<button class="btn btn-primary" title="Trae los pasajeros de una ficha de Atlas y los reparte en los lugares Reservados" onclick="abrirModalCargarFicha('${vueloId}')">📥 Cargar ficha en lugares R (${misRParaCarga})</button>`:''}
       <button class="btn btn-excel" onclick="exportarExcel('${vueloId}')">⬇ Excel</button>
       ${((esAdmin||esOper)&&rV>0)?`<button class="btn btn-outline" title="Darle más horas a una reserva para que no se venza sola" onclick="abrirEstirarVencimiento('${vueloId}')">⏱ Estirar vencimiento (${rV})</button>`:''}
@@ -5032,6 +5035,37 @@ async function guardarPasajero(){
 
 // ── MODAL RESERVAR ───────────────────────────────
 let reservarModoEspera=false,reservarModoEsperaBulk=false,reservarBloqLibres=0,reservarEsC=false,reservarAccLibres=0;
+let reservarStock=null,_reservaAccOrden=[];   // b137: para que el cartel del modal diga el plazo real
+// b137 (Nacho, 17-nov: "lo que se le anuncia al vendedor antes de confirmar tiene que ser lo que pasa"): el cartel del
+// modal de reserva calcula el plazo con la MISMA regla que va a fijar el servidor (reservar_lugares, b136): libres que
+// quedan DESPUÉS de esta reserva (con los bloqueados de Operaciones) ≤3 → 24 h; si no, 48 h los lugares de acción
+// comercial que tome (toma por número de lugar) y 72 h el resto. Antes decía 72 h aunque esa reserva dejara el cupo en
+// sus últimos lugares y naciera con 24.
+function _pintarVencReserva(){
+  const vi=document.getElementById('r-venc-info'); if(!vi) return;
+  if(reservarModoEspera||reservarModoEsperaBulk) return;   // la lista de espera tiene su propio cartel
+  vi.style.display='block';
+  const pre='⏳ Si no se confirma con ficha + factura, ';
+  const n=parseInt(document.getElementById('r-cantidad')?.value);
+  const stock=reservarStock;
+  const pl=k=>`${k} lugar${k===1?'':'es'}`;
+  if(stock==null){   // sin el dato (no debería pasar): el texto de siempre
+    vi.textContent=pre+`esta reserva vence en ${reservarEsC?'24':'72'} horas.`; return;
+  }
+  if(stock<=3){ vi.textContent=pre+'esta reserva vence en 24 horas: el cupo está en sus últimos lugares.'; return; }
+  const umbral=stock-3;   // reservando esta cantidad o más, el cupo queda en sus últimos lugares
+  if(!(n>0)){
+    let t=pre+'esta reserva vence en 72 horas';
+    if(reservarAccLibres>0) t+=` (los ${pl(reservarAccLibres)} de acción comercial, en 48)`;
+    t+='.';
+    if(umbral<=reservarLugaresLibres) t+=` Si reservás ${umbral} o más, el cupo queda en sus últimos lugares y vence en 24 horas.`;
+    vi.textContent=t; return;
+  }
+  if(stock-n<=3){ vi.textContent=pre+`esta reserva vence en 24 horas: con ${pl(n)} el cupo queda en sus últimos lugares.`; return; }
+  const acc=(_reservaAccOrden||[]).slice(0,n).filter(Boolean).length;
+  if(acc>0&&acc<n) vi.textContent=pre+`${acc===1?'el lugar':'los '+acc+' lugares'} de acción comercial que toma esta reserva vence${acc===1?'':'n'} en 48 horas y el resto en 72.`;
+  else vi.textContent=pre+`esta reserva vence en ${acc===n&&acc>0?'48':'72'} horas.`+(umbral<=reservarLugaresLibres?` (Con ${umbral} o más lugares vencería en 24.)`:'');
+}
 // Selector de vendedor (admin y operaciones): reservar a nombre propio o de otro vendedor.
 // Rama A (Ola 2 #35/#36): la mesa de Operaciones carga reservas a nombre del vendedor real para no romper la atribución comercial.
 // Delegación ("asiste en ventas"): nombres de las titulares que este usuario asiste (puede operar sus fichas).
@@ -5059,23 +5093,19 @@ function prepararSelectorVendedor(){
     rvGroup.style.display='';
   } else { rvGroup.style.display='none'; }
 }
-function abrirModalReservar(vueloId,libres,idsStr,bloq,esC,accLibres){
+function abrirModalReservar(vueloId,libres,idsStr,bloq,esC,accLibres,stock){
   reservarModoEspera=false;reservarModoEsperaBulk=false;reservarBloqLibres=parseInt(bloq)||0;reservarEsC=!!esC;
   reservarAccLibres=parseInt(accLibres)||0;   // b87: lugares de acción comercial disponibles en este cupo
   reservarVueloId=vueloId;reservarLugaresLibres=parseInt(libres);
+  // b137: libres que cuentan para el umbral de 24 h (con los bloqueados de Operaciones, como el servidor)
+  reservarStock=Number.isFinite(parseInt(stock))?parseInt(stock):null;
   reservarLugaresIds=idsStr?idsStr.split(',').filter(x=>x):[];
   document.getElementById('r-cantidad').value='';
   document.getElementById('r-cantidad').disabled=false;
   document.getElementById('r-apellido').value='';
   document.getElementById('r-nombre').value='';
   document.getElementById('r-libres-label').textContent=`(${libres} disponibles)`;
-  const vi=document.getElementById('r-venc-info');
-  if(vi){vi.style.display='block';
-    // b87: el plazo depende del lugar, no solo del cupo. Acá todavía no se sabe cuáles va a tomar el
-    // servidor, así que se anuncian los dos casos posibles en vez de uno que puede quedar corto.
-    vi.textContent=(!esC&&reservarAccLibres>0)
-      ? `⏳ Si no se confirma con ficha + factura, esta reserva vence en 72 horas — salvo los ${reservarAccLibres} lugar${reservarAccLibres===1?'':'es'} de acción comercial de este cupo, que vencen en 48 horas.`
-      : `⏳ Si no se confirma con ficha + factura, esta reserva vence en ${esC?'24 horas':'72 horas'}.`;}
+  _pintarVencReserva();
   document.getElementById('modal-r-title').textContent='Reservar lugares';
   document.getElementById('modal-r-alert').innerHTML='';
   document.getElementById('btn-confirmar-reserva').disabled=false;
