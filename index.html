@@ -1214,7 +1214,7 @@ const sb=supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_ANON_KEY,{
 // ⚠️ Una sola versión por cadena y CORTA: el detalle va al CHANGELOG.md, no acá. Nacho ve este texto
 // completo en el encabezado (el resto ve solo el "bNN") y si es largo se desborda; además `APP_VERSION_CORTA`
 // saca el número con un match, así que dos "bNN" en la misma cadena confunden cuál es la versión.
-const APP_VERSION='Fase 2 · 2026-11-17 (b138-TEST · Cabos sueltos de reservas · sobre b137 (cartel con plazo real), b136 (plazo fijo), b135 (margen), b134 (Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
+const APP_VERSION='Fase 2 · 2026-11-17 (b139-TEST · Aviso al dar de baja o renombrar un vendedor con reservas vivas · sobre b138 (cabos sueltos), b137, b136, b135, b134, b133 (salidas grupales etapa 2), b132 (menú lateral), b131)';
 // Columnas de 'vuelos' legibles por cualquier usuario. EXCLUYE precio_neto: el admin lo lee por RPC admin_get_precio_neto (gateada por es_admin). No usar select('*') sobre vuelos: la columna precio_neto quedó revocada a authenticated.
 // ⚠️ Toda columna que se agregue acá necesita `grant select (col) to authenticated` en la base, si no
 // PostgREST tira 400 y se cae la pantalla entera (gotcha #6). `emitido` viene de la migración 2026-08-06.
@@ -6459,6 +6459,27 @@ function renderUsuarios(){
   }).join('');
 }
 
+// b139 (revisión de cabos sueltos #3, 17-nov): las reservas se reconocen por el NOMBRE del vendedor. Inactivar, quitar el
+// acceso o cambiarle el nombre a alguien con reservas vivas las deja sin dueño: no las ve en "Mis reservas", no puede
+// cerrarlas y vencen solas (el cliente pierde el lugar). Antes de hacerlo se muestran y se pide confirmar.
+const _normNombre=s=>String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').trim().toLowerCase();
+async function _reservasVivasDe(nombre){
+  if(!nombre) return [];
+  await asegurarTokenFresco();
+  const {data,error}=await sb.from('pasajeros').select('vendedor,lugares(es_espera,reducido),vuelos(nombre)').eq('status','R').ilike('vendedor',nombre);
+  if(error){console.warn('[reservas vivas]',error);return null;}   // null = no se pudo mirar (se avisa igual)
+  return (data||[]).filter(p=>{const l=Array.isArray(p.lugares)?p.lugares[0]:p.lugares;return _normNombre(p.vendedor)===_normNombre(nombre)&&!(l&&(l.es_espera||l.reducido));})
+    .map(p=>{const v=Array.isArray(p.vuelos)?p.vuelos[0]:p.vuelos;return v?.nombre||'un cupo';});
+}
+function _textoReservasVivas(nombre,cupos){
+  if(cupos===null) return `⚠ No se pudo revisar si ${nombre} tiene reservas vivas. Si las tiene, quedan sin dueño.\n\n`;
+  if(!cupos.length) return '';
+  const cuenta={};cupos.forEach(c=>{cuenta[c]=(cuenta[c]||0)+1;});
+  const lista=Object.entries(cuenta).map(([c,n])=>`  • ${c} (${n})`).join('\n');
+  return `⚠ ${nombre} tiene ${cupos.length} reserva${cupos.length===1?'':'s'} viva${cupos.length===1?'':'s'}:\n${lista}\n\n`;
+}
+const _consejoReservas='Antes, conviene pasarlas a otro vendedor (en el cupo: Editar el lugar → Vendedor) o liberarlas.';
+
 function abrirModalUsuario(email){
   usuarioEditando=email||null;
   const u=email?usuariosAdmin.find(x=>x.email===email):null;
@@ -6510,9 +6531,22 @@ async function guardarUsuario(){
     if(rolPrevio!==rol&&!confirm(`Vas a dar rol ${rolLabel(rol)} a ${usuarioEditando||email}: control total de cupos, reservas y usuarios${rol==='super_admin'?' (máximo nivel)':''}. ¿Confirmar?`))return;
   }
   // Confirmación al INACTIVAR (baja): pierde acceso y sale de rankings/selectores
+  const _uAnt=usuarioEditando?usuariosAdmin.find(x=>x.email===usuarioEditando):null;
   if(usuarioEditando&&!activo){
-    const eraActivo=(usuariosAdmin.find(x=>x.email===usuarioEditando)?.activo)!==false;
-    if(eraActivo&&!confirm(`Vas a INACTIVAR a ${usuarioEditando}: no podrá ingresar y saldrá de rankings y selectores. Sus ventas históricas y su nombre en los cupos se conservan. ¿Confirmar?`))return;
+    const eraActivo=(_uAnt?.activo)!==false;
+    if(eraActivo){
+      // b139: si tiene reservas vivas, se muestran y se dice qué les pasa
+      const aviso=_textoReservasVivas(_uAnt?.nombre||usuarioEditando,await _reservasVivasDe(_uAnt?.nombre));
+      if(!confirm(`${aviso}Vas a INACTIVAR a ${usuarioEditando}: no podrá ingresar y saldrá de rankings y selectores. Sus ventas históricas y su nombre en los cupos se conservan.${aviso?`\n\nSus reservas vivas quedan sin dueño: nadie puede cerrarlas a su nombre y vencen solas. ${_consejoReservas}`:''}\n\n¿Confirmar?`))return;
+    }
+  }
+  // b139: cambiar el NOMBRE de alguien con reservas vivas se las deja a nombre del nombre viejo. Si solo cambian tildes
+  // o mayúsculas, no pasa nada (las reservas lo siguen reconociendo) y no se avisa.
+  if(_uAnt&&_uAnt.nombre&&_normNombre(_uAnt.nombre)!==_normNombre(nombre)){
+    const vivas=await _reservasVivasDe(_uAnt.nombre);
+    if(vivas===null||vivas.length){
+      if(!confirm(`${_textoReservasVivas(_uAnt.nombre,vivas)}Si le cambiás el nombre a «${nombre}», esas reservas siguen a nombre de «${_uAnt.nombre}»: desaparecen de su «Mis reservas», no las puede cerrar y los avisos de vencimiento no le llegan.\n\nRecomendado: cambiar el nombre cuando no tenga reservas vivas, o pasarlas al nombre nuevo después (en el cupo: Editar el lugar → Vendedor).\n\n¿Cambiar el nombre igual?`))return;
+    }
   }
   setBtnLoading('btn-guardar-usuario',true);
   if(!usuarioEditando){
@@ -6542,7 +6576,9 @@ async function guardarUsuario(){
 async function eliminarUsuario(){
   if(!usuarioEditando)return;
   if(usuarioEditando===currentUser?.email){mostrarAlerta('modal-u-alert','No podés eliminar tu propia cuenta','error');return;}
-  if(!confirm('¿Quitar el acceso de '+usuarioEditando+'? No podrá ingresar hasta volver a cargarlo.'))return;
+  {const _u=usuariosAdmin.find(x=>x.email===usuarioEditando);
+   const aviso=_textoReservasVivas(_u?.nombre||usuarioEditando,await _reservasVivasDe(_u?.nombre));   // b139
+   if(!confirm(`${aviso}¿Quitar el acceso de ${usuarioEditando}? No podrá ingresar hasta volver a cargarlo.${aviso?`\n\nSus reservas vivas quedan sin dueño y vencen solas. ${_consejoReservas}`:''}`))return;}
   setBtnLoading('btn-guardar-usuario',true);
   const {error}=await sb.rpc('admin_eliminar_usuario',{p_email:usuarioEditando});
   setBtnLoading('btn-guardar-usuario',false,'Guardar');
@@ -6552,7 +6588,11 @@ async function eliminarUsuario(){
 
 // Toggle rápido activo/inactivo desde el listado (sin abrir el modal). actualActivo = estado actual.
 async function toggleActivoUsuario(email,actualActivo){
-  if(actualActivo&&!confirm('¿Inactivar a '+email+'? No podrá ingresar y saldrá de rankings y selectores. Sus ventas históricas y su nombre en los cupos se conservan.'))return;
+  if(actualActivo){
+    const _u=(usuariosAdmin||[]).find(x=>x.email===email);
+    const aviso=_textoReservasVivas(_u?.nombre||email,await _reservasVivasDe(_u?.nombre));   // b139
+    if(!confirm(`${aviso}¿Inactivar a ${email}? No podrá ingresar y saldrá de rankings y selectores. Sus ventas históricas y su nombre en los cupos se conservan.${aviso?`\n\nSus reservas vivas quedan sin dueño: nadie puede cerrarlas a su nombre y vencen solas. ${_consejoReservas}`:''}`))return;
+  }
   await asegurarTokenFresco();
   const {error}=await sb.rpc('admin_set_activo',{p_email:email,p_activo:!actualActivo});
   if(error){alert('Error: '+error.message);return;}
