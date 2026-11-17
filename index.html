@@ -1214,7 +1214,7 @@ const sb=supabase.createClient(CONFIG.SUPABASE_URL,CONFIG.SUPABASE_ANON_KEY,{
 // ⚠️ Una sola versión por cadena y CORTA: el detalle va al CHANGELOG.md, no acá. Nacho ve este texto
 // completo en el encabezado (el resto ve solo el "bNN") y si es largo se desborda; además `APP_VERSION_CORTA`
 // saca el número con un match, así que dos "bNN" en la misma cadena confunden cuál es la versión.
-const APP_VERSION='Fase 2 · 2026-11-17 (b137-TEST · Cartel de la reserva con el plazo real · sobre b136 (plazo fijo), b135 (margen por temporada), b134 (columna Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
+const APP_VERSION='Fase 2 · 2026-11-17 (b138-TEST · Cabos sueltos de reservas · sobre b137 (cartel con plazo real), b136 (plazo fijo), b135 (margen), b134 (Pago), b133 (salidas grupales etapa 2), b132 (menú lateral), b131 (salidas grupales))';
 // Columnas de 'vuelos' legibles por cualquier usuario. EXCLUYE precio_neto: el admin lo lee por RPC admin_get_precio_neto (gateada por es_admin). No usar select('*') sobre vuelos: la columna precio_neto quedó revocada a authenticated.
 // ⚠️ Toda columna que se agregue acá necesita `grant select (col) to authenticated` en la base, si no
 // PostgREST tira 400 y se cae la pantalla entera (gotcha #6). `emitido` viene de la migración 2026-08-06.
@@ -2166,7 +2166,7 @@ async function cargarReservasTodas(){
   const filas=[];
   for(let desde=0;;desde+=1000){
     const {data,error}=await sb.from('pasajeros')
-      .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vendedor,vuelo_id,vencimiento_horas_extra,plazo_horas,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha,temporada_id)')
+      .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vendedor,vuelo_id,vencimiento_horas_extra,plazo_horas,precio_reserva,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha,temporada_id,precio)')
       .neq('status','L').eq('cancelado',false).order('id').range(desde,desde+999);
     if(error){console.error('[Reservas]',error);cont.innerHTML='<div class="loading" style="color:var(--red)">Error al cargar</div>';return;}
     filas.push(...(data||[]));
@@ -2222,7 +2222,7 @@ function renderReservasTodas(){
   if(!lista.length){
     html+='<div style="padding:16px;color:var(--muted);font-size:14px">No hay reservas ni ventas con estos filtros.</div>';
   } else {
-    html+=`<div class="table-wrap"><table class="sortable"><thead><tr><th>Cupo</th><th>Destino</th><th>Fecha de viaje</th><th>Pasajero</th><th>Vendedor</th><th>Ficha</th><th>Status</th><th>Falta para cerrar</th><th>Vence</th><th>Fecha de reserva</th><th></th></tr></thead><tbody>`;
+    html+=`<div class="table-wrap"><table class="sortable"><thead><tr><th>Cupo</th><th>Destino</th><th>Fecha de viaje</th><th>Pasajero</th><th>Vendedor</th><th>Ficha</th><th>Status</th><th title="El precio del cupo cuando se reservó (b138). Si después cambió, se muestra también el de hoy.">Precio</th><th>Falta para cerrar</th><th>Vence</th><th>Fecha de reserva</th><th></th></tr></thead><tbody>`;
     lista.forEach(f=>{
       const nom=f.primer_apellido?esc(`${f.primer_apellido} ${f.primer_nombre||''}`.trim()):'(sin nombre)';
       const stBadge=f.status==='V'?'<span class="badge badge-v">V</span>':'<span class="badge badge-r">R</span>';
@@ -2235,6 +2235,11 @@ function renderReservasTodas(){
       let faltaCell='<span style="color:var(--muted)">—</span>';
       if(f.status==='R'){const fs=[];if(!f.primer_apellido&&!f.primer_nombre)fs.push('Nombres');if(!f.ficha)fs.push('Ficha');if(!f.factura)fs.push('Factura');faltaCell=fs.length?esc(fs.join(' + ')):'<span style="color:var(--green)">Lista para vender</span>';}
       const pdfBtn=f.lug.id?`<button class="btn-sm" title="Imprimir itinerario para el cliente" onclick="event.stopPropagation();imprimirItinerario('${f.vuelo_id}','${f.lug.id}')">🖨 PDF</button>`:'';
+      // b138: el precio con el que se reservó queda fijo; si el cupo cambió de precio después, se muestran los dos.
+      const pRes=f.precio_reserva!=null?Number(f.precio_reserva):null, pHoy=f.vue.precio!=null?Number(f.vue.precio):null;
+      const precioCell=pRes!=null
+        ?`USD ${pRes.toLocaleString('es-UY')}${(pHoy!=null&&pHoy!==pRes)?`<div style="font-size:11px;color:var(--yellow)" title="El precio del cupo cambió después de esta reserva: la reserva queda con el precio que tenía.">hoy USD ${pHoy.toLocaleString('es-UY')}</div>`:''}`
+        :'<span style="color:var(--muted)">—</span>';
       const fr=f.fecha_reserva||f.creado_en;
       html+=`<tr style="cursor:pointer" onclick="goToDetalle('${f.vuelo_id}')">
         <td style="color:var(--accent2);font-weight:500">${esc(f.vue.nombre)||'—'}</td>
@@ -2244,6 +2249,7 @@ function renderReservasTodas(){
         <td>${esc(f.vendedor||'—')}</td>
         <td style="font-family:'DM Mono',monospace;font-size:12px">${esc(f.ficha||'')||'—'}</td>
         <td>${stBadge}</td>
+        <td data-sort="${pRes??''}" style="font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">${precioCell}</td>
         <td style="font-size:12px">${faltaCell}</td>
         <td data-sort="${venceSort}" style="font-family:'DM Mono',monospace;font-size:12px">${venceCell}</td>
         <td data-sort="${esc(fr||'')}" style="font-family:'DM Mono',monospace;font-size:12px">${formatFechaHora(fr)}</td>
@@ -2855,7 +2861,7 @@ async function cargarMisReservas(){
   cont.innerHTML='<div class="loading"><div class="spinner"></div>Cargando...</div>';
   const nombre=vendedores.find(v=>v.email===currentUser?.email)?.nombre||currentUser?.email||'';
   const {data,error}=await sb.from('pasajeros')
-    .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vuelo_id,vencimiento_horas_extra,plazo_horas,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha)')
+    .select('id,status,fecha_reserva,creado_en,primer_apellido,primer_nombre,ficha,factura,vuelo_id,vencimiento_horas_extra,plazo_horas,precio_reserva,lugares(id,numero_lugar,es_espera,reducido,accion_id),vuelos(nombre,destino,fecha,precio)')
     .in('vendedor',nombresQuePuedoOperar()).neq('status','L').eq('cancelado',false);
   if(error){console.error('[MisReservas]',error);cont.innerHTML='<div class="loading" style="color:var(--red)">Error al cargar</div>';return;}
   const norm=p=>{const l=Array.isArray(p.lugares)?p.lugares[0]:p.lugares;const v=Array.isArray(p.vuelos)?p.vuelos[0]:p.vuelos;return {...p,lug:l||{},vue:v||{}};};
@@ -2883,7 +2889,7 @@ async function cargarMisReservas(){
   if(!lista.length){
     html+='<div style="padding:16px;color:var(--muted);font-size:14px">Todavía no tenés reservas ni ventas registradas.</div>';
   } else {
-    html+=`<div class="table-wrap"><table><thead><tr><th>Cupo</th><th>Destino</th><th>Fecha de viaje</th><th>Pasajero</th><th>Status</th><th>Falta para cerrar</th><th>Vence</th><th>Fecha de reserva</th><th></th></tr></thead><tbody>`;
+    html+=`<div class="table-wrap"><table><thead><tr><th>Cupo</th><th>Destino</th><th>Fecha de viaje</th><th>Pasajero</th><th>Status</th><th title="El precio del cupo cuando reservaste. Si Aéreos lo cambia después, tu reserva queda con este.">Precio</th><th>Falta para cerrar</th><th>Vence</th><th>Fecha de reserva</th><th></th></tr></thead><tbody>`;
     lista.forEach(f=>{
       const nom=f.primer_apellido?esc(`${f.primer_apellido} ${f.primer_nombre||''}`.trim()):'(sin nombre)';
       const stBadge=f.status==='V'?'<span class="badge badge-v">V</span>':'<span class="badge badge-r">R</span>';
@@ -2897,12 +2903,18 @@ async function cargarMisReservas(){
       let faltaCell='<span style="color:var(--muted)">—</span>';
       if(f.status==='R'){const fs=[];if(!f.primer_apellido&&!f.primer_nombre)fs.push('Nombres');if(!f.ficha)fs.push('Ficha');if(!f.factura)fs.push('Factura');faltaCell=fs.length?esc(fs.join(' + ')):'<span style="color:var(--green)">Lista para vender</span>';}
       const pdfBtn=f.lug.id?`<button class="btn-sm" title="Imprimir itinerario para el cliente" onclick="event.stopPropagation();imprimirItinerario('${f.vuelo_id}','${f.lug.id}')">🖨 PDF</button>`:'';
+      // b138: el precio con el que se reservó queda fijo; si el cupo cambió de precio después, se muestran los dos.
+      const pRes=f.precio_reserva!=null?Number(f.precio_reserva):null, pHoy=f.vue.precio!=null?Number(f.vue.precio):null;
+      const precioCell=pRes!=null
+        ?`USD ${pRes.toLocaleString('es-UY')}${(pHoy!=null&&pHoy!==pRes)?`<div style="font-size:11px;color:var(--yellow)" title="El precio del cupo cambió después de esta reserva: la reserva queda con el precio que tenía.">hoy USD ${pHoy.toLocaleString('es-UY')}</div>`:''}`
+        :'<span style="color:var(--muted)">—</span>';
       html+=`<tr style="cursor:pointer" onclick="goToDetalle('${f.vuelo_id}')">
         <td style="color:var(--accent2);font-weight:500">${esc(f.vue.nombre)||'—'}</td>
         <td>${f.vue.destino?`<span class="badge ${regionBadge(f.vue.destino)}">${esc(f.vue.destino)}</span>`:'—'}</td>
         <td>${formatFecha(f.vue.fecha)}</td>
         <td>${nom}${esp}</td>
         <td>${stBadge}</td>
+        <td data-sort="${pRes??''}" style="font-family:'DM Mono',monospace;font-size:12px;white-space:nowrap">${precioCell}</td>
         <td style="font-size:12px">${faltaCell}</td>
         <td style="font-family:'DM Mono',monospace;font-size:12px">${venceCell}</td>
         <td style="font-family:'DM Mono',monospace;font-size:12px">${formatFechaHora(f.fecha_reserva||f.creado_en)}</td>
@@ -3169,6 +3181,14 @@ async function abrirMargenTemporada(){
   renderMargenTemporada();
 }
 function _mgPctInput(){const x=parseFloat(String(document.getElementById('mg-pct')?.value||'').replace(',','.'));return Number.isFinite(x)?x:null;}
+// b138: los cupos marcados cuyo precio va a cambiar y que tienen reservas vivas. Esas reservas conservan el precio con el
+// que se hicieron (pasajeros.precio_reserva; el vendedor lo ve en "Mis reservas"): se avisa antes de aplicar.
+function _mgConReservas(marc,pct){return pct==null?[]:marc.filter(c=>Number(c.reservas)>0&&c.neto>0&&precioConMargen(c.neto,pct)!==c.precio);}
+function _mgAvisoReservas(marc,pct){
+  const cr=_mgConReservas(marc,pct); if(!cr.length) return '';
+  const nRes=cr.reduce((s,c)=>s+Number(c.reservas||0),0), vends=[...new Set(cr.flatMap(c=>c.vendedores||[]))];
+  return `<div style="background:rgba(255,128,0,0.08);border:1px solid rgba(255,128,0,0.3);border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:10px">⚠ <b>${cr.length} cupo${cr.length===1?'':'s'}</b> de los marcados ${cr.length===1?'tiene':'tienen'} <b>${nRes} reserva${nRes===1?'':'s'} viva${nRes===1?'':'s'}</b> (${esc(vends.join(', '))}). Esas reservas <b>conservan el precio con el que se hicieron</b> —el vendedor lo ve en «Mis reservas»—; el precio nuevo vale para lo que se reserve de acá en adelante. Conviene avisarles.</div>`;
+}
 function renderMargenTemporada(){
   if(!_mg) return;
   const cont=document.getElementById('mg-cuerpo'); if(!cont) return;
@@ -3188,11 +3208,12 @@ function renderMargenTemporada(){
       <td>${c.precio>0?c.precio.toLocaleString('es-UY'):'—'}</td>
       <td class="${c.tipo==='propio'?'c-orange':''}">${fmtPct(c.margen)}</td>
       <td style="font-weight:600;${c.marcado?'':'color:var(--muted);font-weight:400'}">${dis||nuevo==null?'—':nuevo.toLocaleString('es-UY')}${c.marcado&&dif?` <span style="font-size:11px;font-weight:400;color:${dif>0?'var(--green)':'var(--red)'}">${dif>0?'+':''}${dif}</span>`:''}</td>
+      <td>${Number(c.reservas)>0?`<span class="c-orange" style="font-weight:600" title="${esc((c.vendedores||[]).join(', '))}">${c.reservas}</span>`:'<span style="color:var(--muted)">—</span>'}</td>
       <td style="font-size:12px;color:${c.tipo==='propio'?'var(--yellow)':'var(--muted)'}">${esc(c.nota)}</td></tr>`;
   };
-  cont.innerHTML=`${propios.length?`<div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.35);border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:10px">⚠ <b>${propios.length} cupo${propios.length===1?' tiene':'s tienen'} un margen distinto al general (${fmtPct(_mg.ref)})</b>: ${propios.filter(c=>c.margen>_mg.ref).length} más alto, ${propios.filter(c=>c.margen<_mg.ref).length} más bajo. Vienen <b>sin marcar</b> (seguramente se editaron a mano a propósito): marcá los que quieras llevar al margen nuevo. <a href="#" style="color:var(--accent2)" onclick="event.preventDefault();_mg.cupos.forEach(c=>{if(c.tipo==='propio')c.marcado=true;});renderMargenTemporada()">Marcar todos</a></div>`:''}
+  cont.innerHTML=_mgAvisoReservas(marc,pct)+`${propios.length?`<div style="background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.35);border-radius:8px;padding:8px 12px;font-size:13px;margin-bottom:10px">⚠ <b>${propios.length} cupo${propios.length===1?' tiene':'s tienen'} un margen distinto al general (${fmtPct(_mg.ref)})</b>: ${propios.filter(c=>c.margen>_mg.ref).length} más alto, ${propios.filter(c=>c.margen<_mg.ref).length} más bajo. Vienen <b>sin marcar</b> (seguramente se editaron a mano a propósito): marcá los que quieras llevar al margen nuevo. <a href="#" style="color:var(--accent2)" onclick="event.preventDefault();_mg.cupos.forEach(c=>{if(c.tipo==='propio')c.marcado=true;});renderMargenTemporada()">Marcar todos</a></div>`:''}
     ${noTocan.emitido+noTocan.sinneto+noTocan.viajo?`<div style="font-size:12px;color:var(--muted);margin-bottom:8px">No se tocan: ${[noTocan.emitido?`${noTocan.emitido} emitido${noTocan.emitido===1?'':'s'}`:'',noTocan.sinneto?`${noTocan.sinneto} sin neto`:'',noTocan.viajo?`${noTocan.viajo} que ya viajaron`:''].filter(Boolean).join(' · ')}.</div>`:''}
-    <div class="table-wrap" style="max-height:52vh;overflow:auto"><table><thead><tr><th></th><th>Cupo</th><th>Fecha</th><th>Neto</th><th>Precio actual</th><th>Margen actual</th><th>Precio nuevo</th><th></th></tr></thead><tbody>${_mg.cupos.map(fila).join('')}</tbody></table></div>
+    <div class="table-wrap" style="max-height:52vh;overflow:auto"><table><thead><tr><th></th><th>Cupo</th><th>Fecha</th><th>Neto</th><th>Precio actual</th><th>Margen actual</th><th>Precio nuevo</th><th title="Reservas sin confirmar: conservan el precio con el que se hicieron">Reservas vivas</th><th></th></tr></thead><tbody>${_mg.cupos.map(fila).join('')}</tbody></table></div>
     <div style="font-size:13px;margin-top:10px">${pct==null?'<span style="color:var(--muted)">Poné el margen para ver los precios nuevos.</span>':`Se van a poner al <b>${fmtPct(pct)}</b> <b>${marc.length}</b> de ${editables.length} cupos que se pueden tocar. Los vendedores ven el precio nuevo enseguida (no sale aviso por mail).`}</div>`;
   const b=document.getElementById('btn-mg-aplicar'); if(b){b.disabled=pct==null||!marc.length;b.textContent=marc.length?`Aplicar a ${marc.length} cupo${marc.length===1?'':'s'}`:'Aplicar';}
   const g=document.getElementById('btn-mg-guardar'); if(g) g.disabled=pct==null;
@@ -3201,7 +3222,8 @@ async function aplicarMargenTemporada(){
   if(!_mg) return; const pct=_mgPctInput(); const ids=_mg.cupos.filter(c=>c.marcado).map(c=>c.id);
   if(pct==null||!ids.length) return;
   if(pct<0&&!confirm(`El margen es negativo (${fmtPct(pct)}): los precios quedarían por debajo del neto. ¿Seguís?`)) return;
-  if(!confirm(`Se van a cambiar los precios de venta de ${ids.length} cupo${ids.length===1?'':'s'} de ${_mg.nombre} al ${fmtPct(pct)} sobre el neto.\n\nLos vendedores ven el precio nuevo enseguida. ¿Seguís?`)) return;
+  const _cr=_mgConReservas(_mg.cupos.filter(c=>c.marcado),pct), _nRes=_cr.reduce((s,c)=>s+Number(c.reservas||0),0);
+  if(!confirm(`Se van a cambiar los precios de venta de ${ids.length} cupo${ids.length===1?'':'s'} de ${_mg.nombre} al ${fmtPct(pct)} sobre el neto.\n\nLos vendedores ven el precio nuevo enseguida.${_nRes?`\n\n⚠ ${_cr.length} de esos cupos ${_cr.length===1?'tiene':'tienen'} ${_nRes} reserva${_nRes===1?'':'s'} viva${_nRes===1?'':'s'}: conservan el precio con el que se hicieron. El nuevo vale para lo que se reserve de acá en adelante.`:''} ¿Seguís?`)) return;
   const b=document.getElementById('btn-mg-aplicar'); b.disabled=true;
   try{
     await asegurarTokenFresco();
@@ -4500,7 +4522,7 @@ async function cargarDetalle(vueloId){
       <td>${esc(p?.vendedor)||'—'}${tpTag}</td>
       <td>${statusCell}</td>
       <td>${esc(p?.factura)||'—'}</td>
-      <td>${libreSeat?'—':formatFechaHora(p?.fecha_reserva||p?.creado_en)}</td>
+      <td>${libreSeat?'—':formatFechaHora(p?.fecha_reserva||p?.creado_en)}${(!libreSeat&&p?.precio_reserva!=null&&vuelo?.precio!=null&&Number(p.precio_reserva)!==Number(vuelo.precio))?`<div style="font-size:10px;color:var(--yellow)" title="El precio del cupo cambió después de esta reserva: la reserva queda con el precio que tenía (b138).">reservado a USD ${Number(p.precio_reserva).toLocaleString('es-UY')}</div>`:''}</td>
       <td class="${vencCls}">${st==='R'?(l.es_espera?'<span style="color:var(--muted)">sin venc. (espera)</span>':vText):(st==='V'?'<span style="color:var(--green)">Vendida</span>':'—')}</td>
       <td>${esc(p?.ficha)||'—'}</td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p?.comentarios)}">${(p?.comentarios&&!libreSeat)?`<span style="color:var(--yellow);font-weight:600">💬 ${esc(p.comentarios)}</span>`:'—'}</td>
@@ -5012,7 +5034,9 @@ async function guardarPasajero(){
       p_fecha_reserva:pFecha,
       p_tiene_infant:tieneInfant,
       p_inf:infObj,
-      p_travel_partner_email:(document.getElementById('p-travel-partner')?.value||null)
+      // b138: la etiqueta TP solo se manda si el selector está a la vista ('' = "Ninguno", la borra). Si no se ve, va
+      // null y el servidor conserva la que tenía (antes la borraba: pasó con 9 ventas).
+      p_travel_partner_email:(document.getElementById('p-travel-partner-group')?.style.display!=='none'?(document.getElementById('p-travel-partner')?.value||''):null)
     });
     if(error){console.error('[Pasajero] Error guardar:',error);setBtnLoading('btn-guardar-pasajero',false,'Guardar');mostrarAlerta('modal-p-alert','Error al guardar pasajero: '+error.message,'error');return;}
     // Ola 2 #53: la RPC devuelve jsonb {id, descartados[], candado}.
@@ -6273,9 +6297,19 @@ async function confirmarEstirar(){
 // es_admin()); esto es solo el disparador y la advertencia. Aunque alguien saltee esta pantalla, la
 // base rechaza igual.
 async function marcarEmitido(vueloId,emitir){
-  const msg=emitir
+  let msg=emitir
     ? 'Marcar el cupo como EMITIDO.\n\nA partir de acá NADIE lo toca: no se puede reservar, vender, editar pasajeros ni editar el cupo.\n\nSolo un administrador puede sacarle la marca después.\n\n¿Confirmás?'
     : 'Sacarle la marca de EMITIDO.\n\nEl cupo vuelve a quedar editable con las reglas de siempre.\n\n¿Confirmás?';
+  // b138: con reservas sin confirmar, se avisa ANTES de emitir. Quedan congeladas: no vencen solas (el control de
+  // vencimientos ya no toca cupos emitidos), pero el vendedor tampoco las puede confirmar hasta que le saquen la marca.
+  if(emitir){
+    const {data:rv}=await sb.from('pasajeros').select('vendedor,lugares(numero_lugar,es_espera,reducido)').eq('vuelo_id',vueloId).eq('status','R');
+    const abiertas=(rv||[]).map(p=>({v:p.vendedor,l:Array.isArray(p.lugares)?p.lugares[0]:p.lugares})).filter(x=>!(x.l&&(x.l.es_espera||x.l.reducido)));
+    if(abiertas.length){
+      const vends=[...new Set(abiertas.map(x=>x.v).filter(Boolean))];
+      msg=`⚠ Este cupo tiene ${abiertas.length} reserva${abiertas.length===1?'':'s'} SIN CONFIRMAR (${vends.join(', ')}).\n\nSi lo emitís, quedan congeladas: no vencen solas, pero el vendedor tampoco las puede confirmar hasta que un administrador le saque la marca. Lo recomendable es confirmarlas o liberarlas antes de emitir.\n\n`+msg;
+    }
+  }
   if(!confirm(msg))return;
   await asegurarTokenFresco();
   const {error}=await sb.rpc('marcar_cupo_emitido',{p_vuelo_id:vueloId,p_emitido:emitir});
@@ -7412,6 +7446,19 @@ async function guardarVuelo(){
        if(pAntes!==pAhora) cambiosCupo.push({tipo:'precio',etiqueta:`el precio de venta (${pAntes==null?'sin precio':'USD '+pAntes} → ${pAhora==null?'sin precio':'USD '+pAhora})`,antes:pAntes,ahora:pAhora});}
       if((vAct?.aerolinea||'')!==(datos.aerolinea||'')) cambiosCupo.push({tipo:'aerolinea',etiqueta:`la aerolínea (${vAct?.aerolinea||'sin aerolínea'} → ${datos.aerolinea||'sin aerolínea'})`,antes:vAct?.aerolinea||'',ahora:datos.aerolinea||''});
       if((vAct?.condiciones_equipaje||'')!==(datos.condiciones_equipaje||'')) cambiosCupo.push({tipo:'equipaje',etiqueta:'las condiciones de equipaje',antes:vAct?.condiciones_equipaje||'',ahora:datos.condiciones_equipaje||''});
+      // b138: si cambia el precio y el cupo tiene reservas vivas, se avisa antes de guardar: esas reservas conservan el
+      // precio con el que se hicieron (pasajeros.precio_reserva) y el vendedor lo ve en "Mis reservas".
+      {const cp=cambiosCupo.find(c=>c.tipo==='precio');
+       if(cp){
+         const {data:rv}=await sb.from('pasajeros').select('vendedor,lugares(es_espera,reducido)').eq('vuelo_id',editarVueloId).eq('status','R');
+         const vivas=(rv||[]).filter(p=>{const l=Array.isArray(p.lugares)?p.lugares[0]:p.lugares;return !(l&&(l.es_espera||l.reducido));});
+         if(vivas.length){
+           const vends=[...new Set(vivas.map(p=>p.vendedor).filter(Boolean))];
+           if(!confirm(`Este cupo tiene ${vivas.length} reserva${vivas.length===1?'':'s'} viva${vivas.length===1?'':'s'} (${vends.join(', ')}).\n\nEsas reservas conservan el precio con el que se hicieron; el precio nuevo (${cp.ahora==null?'sin precio':'USD '+cp.ahora}) vale para lo que se reserve de acá en adelante. Conviene avisarles.\n\n¿Guardar el precio nuevo?`)){
+             setBtnLoading('btn-crear-vuelo',false,'Guardar cambios');return;
+           }
+         }
+       }}
       const {error}=await sb.from('vuelos').update(datos).eq('id',editarVueloId);
       if(error){setBtnLoading('btn-crear-vuelo',false,'Guardar cambios');mostrarAlerta('modal-v-alert',error.message,'error');return;}
       await registrarLog('editar_cupo','vuelo',editarVueloId,{itinerario_cambio:itinerarioCambio});
